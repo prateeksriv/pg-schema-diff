@@ -39,26 +39,31 @@ func buildPlanCmd() *cobra.Command {
 		Short:   "Generate the diff between two databases and the SQL to get from one to the other",
 	}
 
-	fromSchemaFlags := createSchemaSourceFlags(cmd, "from-", "source")
-	oSchemaFlags := createSchemaSourceFlags(cmd, "to-", "destination")
+	fromSchemaFlags := createSchemaSourceFlags(cmd, "from-")
+	toSchemaFlags := createSchemaSourceFlags(cmd, "to-")
 	tempDbConnFlags := createConnectionFlags(cmd, "temp-db-", "The temporary database to use for schema extraction. This is optional if diffing to/from a Postgres instance")
 	planOptsFlags := createPlanOptionsFlags(cmd)
 	outputFmt := outputFormatSql
+	usage := fmt.Sprintf("Change the output format for what is printed. Defaults to %v. (options: %s)", outputFmt.identifier, strings.Join(outputFormatStrings(), ", "))
 	cmd.Flags().Var(
 		&outputFmt,
 		"output-format",
-		fmt.Sprintf("Change the output format for what is printed. Defaults to %v. (options: %s)", outputFmt.identifier, strings.Join(outputFormatStrings(), ", "))
+		usage,
 	)
 	var outputFile string
 	cmd.Flags().StringVar(&outputFile, "output-file", "", "Output file for the plan")
 	var savePlanFile string
 	cmd.Flags().StringVar(&savePlanFile, "save-plan", "", "File to save the plan's internal representation (JSON)")
+	var verbose bool
+	cmd.Flags().BoolVar(&verbose, "verbose", false, "Enable verbose logging to stderr")
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		logger := log.SimpleLogger()
+		logger := log.SimpleLogger(verbose)
+		logger.Debugf("Verbose logging enabled.")
 
 		if outputFile != "" {
 			f, err := os.Create(outputFile)
 			if err != nil {
+				logger.Errorf("Error creating output file %s: %v", outputFile, err)
 				return fmt.Errorf("creating output file %s: %w", outputFile, err)
 			}
 			defer f.Close()
@@ -67,19 +72,24 @@ func buildPlanCmd() *cobra.Command {
 
 		fromSchema, err := parseSchemaSource(*fromSchemaFlags)
 		if err != nil {
+			logger.Errorf("Error parsing from-schema source: %v", err)
 			return err
 		}
 
-		oSchema, err := parseSchemaSource(*toSchemaFlags)
+		toSchema, err := parseSchemaSource(*toSchemaFlags)
 		if err != nil {
+			logger.Errorf("Error parsing to-schema source: %v", err)
 			return err
 		}
 
 		if !tempDbConnFlags.IsSet() {
+			logger.Debugf("temp-db not set. attempting to derive from from- or to-schema")
 			// A temporary database must be provided. Attempt to pull it from the from or to schema source.
 			if fromSchemaFlags.connFlags.IsSet() {
+				logger.Debugf("Using from-schema DSN for temp DB")
 				tempDbConnFlags = fromSchemaFlags.connFlags
 			} else if toSchemaFlags.connFlags.IsSet() {
+				logger.Debugf("Using to-schema DSN for temp DB")
 				tempDbConnFlags = toSchemaFlags.connFlags
 			} else {
 				// In the future, we may allow folks to plumb in a postgres binary that we start for them OR a separate
@@ -87,37 +97,48 @@ func buildPlanCmd() *cobra.Command {
 				//
 				// Notably, a temporary database is NOT required if both databases are DSNs..., but inherently that means
 				// we can derive a tempdDbDsn (this case is never hit).
-				return fmt.Errorf("at least one Postgres server must be provided to generate a plan. either --%s, --%s or --%s must be set. Without a temporary Postgres database, pg-schema-diff cannot extract the schema from DDL", tempDbConnFlags.dsnFlagName, fromSchemaFlags.connFlags.dsnFlagName, toSchemaFlags.connFlags.dsnFlagName)
+				err := fmt.Errorf("at least one Postgres server must be provided to generate a plan. either --%s, --%s or --%s must be set. Without a temporary Postgres database, pg-schema-diff cannot extract the schema from DDL", tempDbConnFlags.dsnFlagName, fromSchemaFlags.connFlags.dsnFlagName, toSchemaFlags.connFlags.dsnFlagName)
+				logger.Errorf(err.Error())
+				return err
 			}
 		}
 		tempDbConnConfig, err := parseConnectionFlags(tempDbConnFlags)
 		if err != nil {
+			logger.Errorf("Error parsing temp-db connection flags: %v", err)
 			return err
 		}
 
 		planOpts, err := parsePlanOptions(*planOptsFlags)
 		if err != nil {
+			logger.Errorf("Error parsing plan options: %v", err)
 			return err
 		}
 
 		cmd.SilenceUsage = true
 
+		logger.Debugf("Generating plan...")
 		plan, err := generatePlan(cmd.Context(), generatePlanParameters{
 			fromSchema:       fromSchema,
-			oSchema:         toSchema,
+			toSchema:         toSchema,
 			tempDbConnConfig: tempDbConnConfig,
 			planOptions:      planOpts,
 			logger:           logger,
 		})
 		if err != nil {
+			logger.Errorf("Error generating plan: %v", err)
 			return err
 		}
+		logger.Debugf("Successfully generated plan.")
 
 		if savePlanFile != "" {
+			logger.Debugf("Saving plan to %s", savePlanFile)
 			planJSON := planToJsonS(plan)
 			if err := os.WriteFile(savePlanFile, []byte(planJSON), 0644); err != nil {
-				return fmt.Errorf("saving plan to %s: %w", savePlanFile, err)
+				err = fmt.Errorf("saving plan to %s: %w", savePlanFile, err)
+				logger.Errorf(err.Error())
+				return err
 			}
+			logger.Debugf("Successfully saved plan to %s", savePlanFile)
 		}
 
 		cmdPrintln(cmd, outputFmt.convertToOutputString(plan))
@@ -141,7 +162,6 @@ type (
 		lockTimeoutModifiers      []string
 		insertStatements          []string
 	}
-
 
 	outputFormat struct {
 		identifier            string
@@ -264,23 +284,23 @@ func createPlanOptionsFlags(cmd *cobra.Command) *planOptionsFlags {
 	return &flags
 }
 
-func createSchemaSourceFlags(cmd *cobra.Command, prefix, schemaLifecycle string) *schemaSourceFactoryFlags {
+func createSchemaSourceFlags(cmd *cobra.Command, prefix string) *schemaSourceFactoryFlags {
 	var p schemaSourceFactoryFlags
 
 	p.schemaDirFlagName = prefix + "dir"
-	cmd.Flags().StringArrayVar(&p.schemaDirs, p.schemaDirFlagName, nil, fmt.Sprintf("Directory of .SQL files to use as the schema %s (can be multiple).", schemaLifecycle))
+	cmd.Flags().StringArrayVar(&p.schemaDirs, p.schemaDirFlagName, nil, "Directory of .SQL files to use as the schema source (can be multiple).")
 	if err := cmd.MarkFlagDirname(p.schemaDirFlagName); err != nil {
 		panic(err)
 	}
 
-	p.connFlags = createConnectionFlags(cmd, prefix, fmt.Sprintf(" The database to use as the schema %s", schemaLifecycle))
+	p.connFlags = createConnectionFlags(cmd, prefix, " The database to use as the schema source")
 
 	return &p
 }
 
 func timeoutModifierFlagVar(cmd *cobra.Command, p *[]string, timeoutType string, shorthand string) {
 	flagName := fmt.Sprintf("%s-timeout-modifier", timeoutType)
-	description := fmt.Sprintf("list of '%s=\"<%s>\" %s=<duration>', where if a statement matches "+
+	description := fmt.Sprintf("list of '%s=\"<regex>\" %s=<duration>', where if a statement matches "+
 		"the regex, the statement will have the target %s timeout. If multiple regexes match, the latest regex will "+
 		"take priority. Example: -t '%s=\"CREATE TABLE\" %s=5m'",
 		patternTimeoutModifierKey, timeoutTimeoutModifierKey,
@@ -478,7 +498,7 @@ func parseInsertStatementStr(val string) (insertStatement, error) {
 
 type generatePlanParameters struct {
 	fromSchema       schemaSourceFactory
-	oSchema         schemaSourceFactory
+	toSchema         schemaSourceFactory
 	tempDbConnConfig *pgx.ConnConfig
 	planOptions      planOptions
 	logger           log.Logger
@@ -488,76 +508,94 @@ func generatePlan(
 	ctx context.Context,
 	params generatePlanParameters,
 ) (diff.Plan, error) {
+	params.logger.Debugf("Creating temp db factory...")
 	tempDbFactory, err := tempdb.NewOnInstanceFactory(ctx, func(ctx context.Context, dbName string) (*sql.DB, error) {
 		cfg := params.tempDbConnConfig.Copy()
 		cfg.Database = dbName
 		return openDbWithPgxConfig(cfg)
 	}, tempdb.WithRootDatabase(params.tempDbConnConfig.Database))
 	if err != nil {
+		params.logger.Errorf("Error creating temp db factory: %v", err)
 		return diff.Plan{}, fmt.Errorf("creating temp db factory: %w", err)
 	}
 	defer func() {
+		params.logger.Debugf("Closing temp db factory.")
 		err := tempDbFactory.Close()
 		if err != nil {
 			params.logger.Errorf("error shutting down temp db factory: %v", err)
 		}
 	}()
 
+	params.logger.Debugf("Creating from-schema source...")
 	fromSchema, fromSchemaSourceCloser, err := params.fromSchema()
 	if err != nil {
+		params.logger.Errorf("Error creating from-schema source: %v", err)
 		return diff.Plan{}, fmt.Errorf("creating schema source: %w", err)
 	}
 	defer fromSchemaSourceCloser.Close()
 
-	oSchema, toSchemaSourceCloser, err := params.toSchema()
+	params.logger.Debugf("Creating to-schema source...")
+	toSchema, toSchemaSourceCloser, err := params.toSchema()
 	if err != nil {
+		params.logger.Errorf("Error creating to-schema source: %v", err)
 		return diff.Plan{}, fmt.Errorf("creating schema source: %w", err)
 	}
 	defer toSchemaSourceCloser.Close()
 
+	params.logger.Debugf("Running diff.Generate...")
 	plan, err := diff.Generate(ctx, fromSchema, toSchema,
 		append(
 			params.planOptions.opts,
 			diff.WithTempDbFactory(tempDbFactory),
-		)...
+		)...,
 	)
 	if err != nil {
+		params.logger.Errorf("Error running diff.Generate: %v", err)
 		return diff.Plan{}, fmt.Errorf("generating plan: %w", err)
 	}
 
+	params.logger.Debugf("Applying plan modifiers...")
 	modifiedPlan, err := applyPlanModifiers(
 		plan,
 		params.planOptions,
+		params.logger,
 	)
 	if err != nil {
+		params.logger.Errorf("Error applying plan modifiers: %v", err)
 		return diff.Plan{}, fmt.Errorf("applying plan modifiers: %w", err)
 	}
 
+	params.logger.Debugf("Plan generation complete.")
 	return modifiedPlan, nil
 }
 
 func applyPlanModifiers(
 	plan diff.Plan,
 	config planOptions,
+	logger log.Logger,
 ) (diff.Plan, error) {
+	logger.Debugf("Applying %d statement timeout modifiers", len(config.statementTimeoutModifiers))
 	for _, stm := range config.statementTimeoutModifiers {
 		plan = plan.ApplyStatementTimeoutModifier(stm.regex, stm.timeout)
 	}
+	logger.Debugf("Applying %d lock timeout modifiers", len(config.lockTimeoutModifiers))
 	for _, ltm := range config.lockTimeoutModifiers {
 		plan = plan.ApplyLockTimeoutModifier(ltm.regex, ltm.timeout)
 	}
+	logger.Debugf("Inserting %d statements", len(config.insertStatements))
 	for _, is := range config.insertStatements {
 		var err error
 		plan, err = plan.InsertStatement(is.index, diff.Statement{
 			DDL:         is.ddl,
 			Timeout:     is.timeout,
 			LockTimeout: is.lockTimeout,
-			Hazards: []diff.MigrationHazard{{ 
+			Hazards: []diff.MigrationHazard{{
 				Type:    diff.MigrationHazardTypeIsUserGenerated,
 				Message: "This statement is user-generated",
 			}},
 		})
 		if err != nil {
+			logger.Errorf("Error inserting statement %+v: %v", is, err)
 			return diff.Plan{}, fmt.Errorf("inserting %+v: %w", is, err)
 		}
 	}
