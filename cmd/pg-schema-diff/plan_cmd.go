@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -38,25 +39,38 @@ func buildPlanCmd() *cobra.Command {
 		Short:   "Generate the diff between two databases and the SQL to get from one to the other",
 	}
 
-	fromSchemaFlags := createSchemaSourceFlags(cmd, "from-")
-	toSchemaFlags := createSchemaSourceFlags(cmd, "to-")
+	fromSchemaFlags := createSchemaSourceFlags(cmd, "from-", "source")
+	oSchemaFlags := createSchemaSourceFlags(cmd, "to-", "destination")
 	tempDbConnFlags := createConnectionFlags(cmd, "temp-db-", "The temporary database to use for schema extraction. This is optional if diffing to/from a Postgres instance")
 	planOptsFlags := createPlanOptionsFlags(cmd)
 	outputFmt := outputFormatSql
 	cmd.Flags().Var(
 		&outputFmt,
 		"output-format",
-		fmt.Sprintf("Change the output format for what is printed. Defaults to %v. (options: %s)", outputFmt.identifier, strings.Join(outputFormatStrings(), ", ")),
+		fmt.Sprintf("Change the output format for what is printed. Defaults to %v. (options: %s)", outputFmt.identifier, strings.Join(outputFormatStrings(), ", "))
 	)
+	var outputFile string
+	cmd.Flags().StringVar(&outputFile, "output-file", "", "Output file for the plan")
+	var savePlanFile string
+	cmd.Flags().StringVar(&savePlanFile, "save-plan", "", "File to save the plan's internal representation (JSON)")
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		logger := log.SimpleLogger()
+
+		if outputFile != "" {
+			f, err := os.Create(outputFile)
+			if err != nil {
+				return fmt.Errorf("creating output file %s: %w", outputFile, err)
+			}
+			defer f.Close()
+			cmd.SetOut(f)
+		}
 
 		fromSchema, err := parseSchemaSource(*fromSchemaFlags)
 		if err != nil {
 			return err
 		}
 
-		toSchema, err := parseSchemaSource(*toSchemaFlags)
+		oSchema, err := parseSchemaSource(*toSchemaFlags)
 		if err != nil {
 			return err
 		}
@@ -90,13 +104,20 @@ func buildPlanCmd() *cobra.Command {
 
 		plan, err := generatePlan(cmd.Context(), generatePlanParameters{
 			fromSchema:       fromSchema,
-			toSchema:         toSchema,
+			oSchema:         toSchema,
 			tempDbConnConfig: tempDbConnConfig,
 			planOptions:      planOpts,
 			logger:           logger,
 		})
 		if err != nil {
 			return err
+		}
+
+		if savePlanFile != "" {
+			planJSON := planToJsonS(plan)
+			if err := os.WriteFile(savePlanFile, []byte(planJSON), 0644); err != nil {
+				return fmt.Errorf("saving plan to %s: %w", savePlanFile, err)
+			}
 		}
 
 		cmdPrintln(cmd, outputFmt.convertToOutputString(plan))
@@ -120,6 +141,7 @@ type (
 		lockTimeoutModifiers      []string
 		insertStatements          []string
 	}
+
 
 	outputFormat struct {
 		identifier            string
@@ -242,23 +264,23 @@ func createPlanOptionsFlags(cmd *cobra.Command) *planOptionsFlags {
 	return &flags
 }
 
-func createSchemaSourceFlags(cmd *cobra.Command, prefix string) *schemaSourceFactoryFlags {
+func createSchemaSourceFlags(cmd *cobra.Command, prefix, schemaLifecycle string) *schemaSourceFactoryFlags {
 	var p schemaSourceFactoryFlags
 
 	p.schemaDirFlagName = prefix + "dir"
-	cmd.Flags().StringArrayVar(&p.schemaDirs, p.schemaDirFlagName, nil, "Directory of .SQL files to use as the schema source (can be multiple).")
+	cmd.Flags().StringArrayVar(&p.schemaDirs, p.schemaDirFlagName, nil, fmt.Sprintf("Directory of .SQL files to use as the schema %s (can be multiple).", schemaLifecycle))
 	if err := cmd.MarkFlagDirname(p.schemaDirFlagName); err != nil {
 		panic(err)
 	}
 
-	p.connFlags = createConnectionFlags(cmd, prefix, " The database to use as the schema source")
+	p.connFlags = createConnectionFlags(cmd, prefix, fmt.Sprintf(" The database to use as the schema %s", schemaLifecycle))
 
 	return &p
 }
 
 func timeoutModifierFlagVar(cmd *cobra.Command, p *[]string, timeoutType string, shorthand string) {
 	flagName := fmt.Sprintf("%s-timeout-modifier", timeoutType)
-	description := fmt.Sprintf("list of '%s=\"<regex>\" %s=<duration>', where if a statement matches "+
+	description := fmt.Sprintf("list of '%s=\"<%s>\" %s=<duration>', where if a statement matches "+
 		"the regex, the statement will have the target %s timeout. If multiple regexes match, the latest regex will "+
 		"take priority. Example: -t '%s=\"CREATE TABLE\" %s=5m'",
 		patternTimeoutModifierKey, timeoutTimeoutModifierKey,
@@ -456,7 +478,7 @@ func parseInsertStatementStr(val string) (insertStatement, error) {
 
 type generatePlanParameters struct {
 	fromSchema       schemaSourceFactory
-	toSchema         schemaSourceFactory
+	oSchema         schemaSourceFactory
 	tempDbConnConfig *pgx.ConnConfig
 	planOptions      planOptions
 	logger           log.Logger
@@ -487,7 +509,7 @@ func generatePlan(
 	}
 	defer fromSchemaSourceCloser.Close()
 
-	toSchema, toSchemaSourceCloser, err := params.toSchema()
+	oSchema, toSchemaSourceCloser, err := params.toSchema()
 	if err != nil {
 		return diff.Plan{}, fmt.Errorf("creating schema source: %w", err)
 	}
@@ -497,7 +519,7 @@ func generatePlan(
 		append(
 			params.planOptions.opts,
 			diff.WithTempDbFactory(tempDbFactory),
-		)...,
+		)...
 	)
 	if err != nil {
 		return diff.Plan{}, fmt.Errorf("generating plan: %w", err)
@@ -530,7 +552,7 @@ func applyPlanModifiers(
 			DDL:         is.ddl,
 			Timeout:     is.timeout,
 			LockTimeout: is.lockTimeout,
-			Hazards: []diff.MigrationHazard{{
+			Hazards: []diff.MigrationHazard{{ 
 				Type:    diff.MigrationHazardTypeIsUserGenerated,
 				Message: "This statement is user-generated",
 			}},
