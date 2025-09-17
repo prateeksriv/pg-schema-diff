@@ -25,3 +25,6 @@ vendor/
 # Intellij
 .idea/
 pg-schema-diff
+schema-versioning/*
+.env
+

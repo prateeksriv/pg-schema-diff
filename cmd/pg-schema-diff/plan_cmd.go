@@ -307,6 +307,7 @@ func parseSchemaSource(p schemaSourceFactoryFlags, schemaLifecycle string) (sche
 	var ssf schemaSourceFactory
 
 	if len(p.schemaDirs) > 0 {
+		stdlog.Printf("[DEBUG] Parsing schema source from directories: %v", p.schemaDirs)
 		ssf = func() (diff.SchemaSource, io.Closer, error) {
 			schemaSource, err := diff.DirSchemaSource(p.schemaDirs)
 			if err != nil {
@@ -317,6 +318,7 @@ func parseSchemaSource(p schemaSourceFactoryFlags, schemaLifecycle string) (sche
 	}
 
 	if p.connFlags.IsSet() {
+		stdlog.Printf("[DEBUG] Parsing schema source from connection flags")
 		if ssf != nil {
 			return nil, fmt.Errorf("only one of --%s or --%s can be set for the %s schema source", p.schemaDirFlagName, p.connFlags.dsnFlagName, schemaLifecycle)
 		}
@@ -330,6 +332,7 @@ func parseSchemaSource(p schemaSourceFactoryFlags, schemaLifecycle string) (sche
 	if ssf == nil {
 		return nil, fmt.Errorf("either --%s or --%s must be set for the %s schema source", p.schemaDirFlagName, p.connFlags.dsnFlagName, schemaLifecycle)
 	}
+	stdlog.Printf("[DEBUG] Schema source parsed successfully for %s", schemaLifecycle)
 	return ssf, nil
 }
 
@@ -347,23 +350,28 @@ func dsnSchemaSource(connConfig *pgx.ConnConfig) schemaSourceFactory {
 }
 
 func parsePlanOptions(p planOptionsFlags) (planOptions, error) {
+	stdlog.Printf("[DEBUG] Parsing plan options")
 	opts := []diff.PlanOpt{
 		diff.WithIncludeSchemas(p.includeSchemas...),
 		diff.WithExcludeSchemas(p.excludeSchemas...),
 	}
 
 	if p.dataPackNewTables {
+		stdlog.Printf("[DEBUG] Plan option: dataPackNewTables enabled")
 		opts = append(opts, diff.WithDataPackNewTables())
 	}
 	if p.disablePlanValidation {
+		stdlog.Printf("[DEBUG] Plan option: disablePlanValidation enabled")
 		opts = append(opts, diff.WithDoNotValidatePlan())
 	}
 	if p.noConcurrentIndexOps {
+		stdlog.Printf("[DEBUG] Plan option: noConcurrentIndexOps enabled")
 		opts = append(opts, diff.WithNoConcurrentIndexOps())
 	}
 
 	var statementTimeoutModifiers []timeoutModifier
 	for _, s := range p.statementTimeoutModifiers {
+		stdlog.Printf("[DEBUG] Parsing statement timeout modifier: %s", s)
 		stm, err := parseTimeoutModifier(s)
 		if err != nil {
 			return planOptions{}, fmt.Errorf("parsing statement timeout modifier from %q: %w", s, err)
@@ -373,6 +381,7 @@ func parsePlanOptions(p planOptionsFlags) (planOptions, error) {
 
 	var lockTimeoutModifiers []timeoutModifier
 	for _, s := range p.lockTimeoutModifiers {
+		stdlog.Printf("[DEBUG] Parsing lock timeout modifier: %s", s)
 		ltm, err := parseTimeoutModifier(s)
 		if err != nil {
 			return planOptions{}, fmt.Errorf("parsing statement timeout modifier from %q: %w", s, err)
@@ -382,12 +391,14 @@ func parsePlanOptions(p planOptionsFlags) (planOptions, error) {
 
 	var insertStatements []insertStatement
 	for _, i := range p.insertStatements {
+		stdlog.Printf("[DEBUG] Parsing insert statement: %s", i)
 		is, err := parseInsertStatementStr(i)
 		if err != nil {
 			return planOptions{}, fmt.Errorf("parsing insert statement from %q: %w", i, err)
 		}
 		insertStatements = append(insertStatements, is)
 	}
+	stdlog.Printf("[DEBUG] Plan options parsed successfully")
 
 	return planOptions{
 		opts:                      opts,
@@ -400,6 +411,7 @@ func parsePlanOptions(p planOptionsFlags) (planOptions, error) {
 // parseTimeoutModifier attempts to parse an option representing a statement timeout modifier in the
 // form of regex=duration where duration could be a decimal number and ends with a unit
 func parseTimeoutModifier(val string) (timeoutModifier, error) {
+	stdlog.Printf("[DEBUG] Parsing timeout modifier: %s", val)
 	fm, err := logFmtToMap(val)
 	if err != nil {
 		return timeoutModifier{}, fmt.Errorf("could not parse %q into logfmt: %w", val, err)
@@ -428,6 +440,7 @@ func parseTimeoutModifier(val string) (timeoutModifier, error) {
 	if err != nil {
 		return timeoutModifier{}, fmt.Errorf("pattern regex could not be compiled from %q: %w", regexStr, err)
 	}
+	stdlog.Printf("[DEBUG] Successfully parsed timeout modifier: regex=%s, timeout=%s", regexStr, duration)
 
 	return timeoutModifier{
 		regex:   re,
@@ -436,6 +449,7 @@ func parseTimeoutModifier(val string) (timeoutModifier, error) {
 }
 
 func parseInsertStatementStr(val string) (insertStatement, error) {
+	stdlog.Printf("[DEBUG] Parsing insert statement string: %s", val)
 	fm, err := logFmtToMap(val)
 	if err != nil {
 		return insertStatement{}, fmt.Errorf("could not parse into logfmt: %w", err)
@@ -479,6 +493,7 @@ func parseInsertStatementStr(val string) (insertStatement, error) {
 	if err != nil {
 		return insertStatement{}, fmt.Errorf("lock timeout duration could not be parsed from %q: %w", lockTimeoutStr, err)
 	}
+	stdlog.Printf("[DEBUG] Successfully parsed insert statement: index=%d, ddl=%s, timeout=%s, lockTimeout=%s", index, statementStr, statementTimeout, lockTimeout)
 
 	return insertStatement{
 		index:       index,
