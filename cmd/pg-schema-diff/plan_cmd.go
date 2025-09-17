@@ -11,6 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"os"
+	stdlog "log"
+
 	"github.com/jackc/pgx/v4"
 	"github.com/spf13/cobra"
 	"github.com/stripe/pg-schema-diff/internal/util"
@@ -53,11 +56,13 @@ func buildPlanCmd() *cobra.Command {
 
 		fromSchema, err := parseSchemaSource(*fromSchemaFlags)
 		if err != nil {
+			logger.Errorf("Program exiting: Failed to parse 'from' schema source: %v", err)
 			return err
 		}
 
 		toSchema, err := parseSchemaSource(*toSchemaFlags)
 		if err != nil {
+			logger.Errorf("Program exiting: Failed to parse 'to' schema source: %v", err)
 			return err
 		}
 
@@ -78,11 +83,13 @@ func buildPlanCmd() *cobra.Command {
 		}
 		tempDbConnConfig, err := parseConnectionFlags(tempDbConnFlags)
 		if err != nil {
+			logger.Errorf("Program exiting: Failed to parse temporary database connection flags: %v", err)
 			return err
 		}
 
 		planOpts, err := parsePlanOptions(*planOptsFlags)
 		if err != nil {
+			logger.Errorf("Program exiting: Failed to parse plan options: %v", err)
 			return err
 		}
 
@@ -96,6 +103,7 @@ func buildPlanCmd() *cobra.Command {
 			logger:           logger,
 		})
 		if err != nil {
+			logger.Errorf("Program exiting: Failed to generate plan: %v", err)
 			return err
 		}
 
@@ -248,7 +256,8 @@ func createSchemaSourceFlags(cmd *cobra.Command, prefix string) *schemaSourceFac
 	p.schemaDirFlagName = prefix + "dir"
 	cmd.Flags().StringArrayVar(&p.schemaDirs, p.schemaDirFlagName, nil, "Directory of .SQL files to use as the schema source (can be multiple).")
 	if err := cmd.MarkFlagDirname(p.schemaDirFlagName); err != nil {
-		panic(err)
+		stdlog.Printf("Program exiting: Failed to mark flag dirname for %s: %v", p.schemaDirFlagName, err)
+		os.Exit(1)
 	}
 
 	p.connFlags = createConnectionFlags(cmd, prefix, " The database to use as the schema source")
