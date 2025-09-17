@@ -58,12 +58,14 @@ func buildPlanCmd() *cobra.Command {
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		logger := log.SimpleLogger(*verbose)
 
+		logger.Debugf("Parsing 'from' schema source flags")
 		fromSchema, err := parseSchemaSource(*fromSchemaFlags, "from")
 		if err != nil {
 			logger.Errorf("Program exiting: Failed to parse 'from' schema source: %v", err)
 			return err
 		}
 
+		logger.Debugf("Parsing 'to' schema source flags")
 		toSchema, err := parseSchemaSource(*toSchemaFlags, "to")
 		if err != nil {
 			logger.Errorf("Program exiting: Failed to parse 'to' schema source: %v", err)
@@ -72,6 +74,7 @@ func buildPlanCmd() *cobra.Command {
 
 		if !tempDbConnFlags.IsSet() {
 			// A temporary database must be provided. Attempt to pull it from the from or to schema source.
+			logger.Debugf("Temporary database connection flags not set. Attempting to derive from schema sources.")
 			if fromSchemaFlags.connFlags.IsSet() {
 				tempDbConnFlags = fromSchemaFlags.connFlags
 			} else if toSchemaFlags.connFlags.IsSet() {
@@ -85,12 +88,14 @@ func buildPlanCmd() *cobra.Command {
 				return fmt.Errorf("at least one Postgres server must be provided to generate a plan. either --%s, --%s or --%s must be set. Without a temporary Postgres database, pg-schema-diff cannot extract the schema from DDL", tempDbConnFlags.dsnFlagName, fromSchemaFlags.connFlags.dsnFlagName, toSchemaFlags.connFlags.dsnFlagName)
 			}
 		}
+		logger.Debugf("Parsing temporary database connection flags")
 		tempDbConnConfig, err := parseConnectionFlags(tempDbConnFlags)
 		if err != nil {
 			logger.Errorf("Program exiting: Failed to parse temporary database connection flags: %v", err)
 			return err
 		}
 
+		logger.Debugf("Parsing plan options")
 		planOpts, err := parsePlanOptions(*planOptsFlags)
 		if err != nil {
 			logger.Errorf("Program exiting: Failed to parse plan options: %v", err)
@@ -113,14 +118,17 @@ func buildPlanCmd() *cobra.Command {
 
 		output := outputFmt.convertToOutputString(plan)
 		if *outputFile != "" {
+			logger.Debugf("Writing output to file: %s", *outputFile)
 			if err := writeOutputToFile(*outputFile, output); err != nil {
 				return err
 			}
 		} else {
+			logger.Debugf("Printing output to stdout")
 			cmdPrintln(cmd, output)
 		}
 
 		if *savePlan != "" {
+			logger.Debugf("Saving plan to JSON file: %s", *savePlan)
 			if err := savePlanToJsonFile(*savePlan, plan); err != nil {
 				return err
 			}
