@@ -129,7 +129,7 @@ func Generate(
 	planOptions := &planOptions{
 		validatePlan:            true,
 		ignoreChangesToColOrder: true,
-		logger:                  log.SimpleLogger(),
+		logger:                  log.SimpleLogger(false),
 		randReader:              rand.Reader,
 	}
 	for _, opt := range opts {

@@ -2,29 +2,46 @@ package log
 
 import (
 	"fmt"
-	"log"
+	"os"
 )
 
 type (
 	Logger interface {
+		Debugf(msg string, args ...any)
+		Infof(msg string, args ...any)
 		Errorf(msg string, args ...any)
 		Warnf(msg string, args ...any)
 	}
 
-	simpleLogger struct{}
+	simpleLogger struct {
+		verbose bool
+	}
 )
 
 // SimpleLogger is a bare-bones implementation of the logging interface, e.g., used for testing
-func SimpleLogger() Logger {
-	return &simpleLogger{}
+func SimpleLogger(verbose bool) Logger {
+	return &simpleLogger{verbose: verbose}
 }
 
-func (*simpleLogger) Errorf(msg string, args ...any) {
-	formattedMessage := fmt.Sprintf(msg, args...)
-	log.Printf("[ERROR] %s", formattedMessage)
+func (s *simpleLogger) Debugf(msg string, args ...any) {
+	s.logWithLevel("DEBUG", msg, args...)
 }
 
-func (*simpleLogger) Warnf(msg string, args ...any) {
-	formattedMessage := fmt.Sprintf(msg, args...)
-	log.Printf("[WARNING] %s", formattedMessage)
+func (s *simpleLogger) Infof(msg string, args ...any) {
+	s.logWithLevel("INFO", msg, args...)
+}
+
+func (s *simpleLogger) Errorf(msg string, args ...any) {
+	s.logWithLevel("ERROR", msg, args...)
+}
+
+func (s *simpleLogger) Warnf(msg string, args ...any) {
+	s.logWithLevel("WARNING", msg, args...)
+}
+
+func (s *simpleLogger) logWithLevel(level, msg string, args ...any) {
+	if s.verbose {
+		formattedMessage := fmt.Sprintf(msg, args...)
+		_, _ = fmt.Fprintf(os.Stderr, "[%s] %s\n", level, formattedMessage)
+	}
 }

@@ -41,8 +41,8 @@ func buildPlanCmd() *cobra.Command {
 		Short:   "Generate the diff between two databases and the SQL to get from one to the other",
 	}
 
-	fromSchemaFlags := createSchemaSourceFlags(cmd, "from-")
-	toSchemaFlags := createSchemaSourceFlags(cmd, "to-")
+	fromSchemaFlags := createSchemaSourceFlags(cmd, "from-", "The database to migrate from")
+	toSchemaFlags := createSchemaSourceFlags(cmd, "to-", "The database to migrate to")
 	tempDbConnFlags := createConnectionFlags(cmd, "temp-db-", "The temporary database to use for schema extraction. This is optional if diffing to/from a Postgres instance")
 	planOptsFlags := createPlanOptionsFlags(cmd)
 	outputFmt := outputFormatSql
@@ -51,16 +51,19 @@ func buildPlanCmd() *cobra.Command {
 		"output-format",
 		fmt.Sprintf("Change the output format for what is printed. Defaults to %v. (options: %s)", outputFmt.identifier, strings.Join(outputFormatStrings(), ", ")),
 	)
-	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		logger := log.SimpleLogger()
+	outputFile := cmd.Flags().String("output-file", "", "If set, will write the output to the specified file instead of stdout")
+	savePlan := cmd.Flags().String("save-plan", "", "If set, will save the generated plan to the specified file as JSON")
 
-		fromSchema, err := parseSchemaSource(*fromSchemaFlags)
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		logger := log.SimpleLogger(false)
+
+		fromSchema, err := parseSchemaSource(*fromSchemaFlags, "from")
 		if err != nil {
 			logger.Errorf("Program exiting: Failed to parse 'from' schema source: %v", err)
 			return err
 		}
 
-		toSchema, err := parseSchemaSource(*toSchemaFlags)
+		toSchema, err := parseSchemaSource(*toSchemaFlags, "to")
 		if err != nil {
 			logger.Errorf("Program exiting: Failed to parse 'to' schema source: %v", err)
 			return err
@@ -107,7 +110,20 @@ func buildPlanCmd() *cobra.Command {
 			return err
 		}
 
-		cmdPrintln(cmd, outputFmt.convertToOutputString(plan))
+		output := outputFmt.convertToOutputString(plan)
+		if *outputFile != "" {
+			if err := writeOutputToFile(*outputFile, output); err != nil {
+				return err
+			}
+		} else {
+			cmdPrintln(cmd, output)
+		}
+
+		if *savePlan != "" {
+			if err := savePlanToJsonFile(*savePlan, plan); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 
@@ -250,17 +266,17 @@ func createPlanOptionsFlags(cmd *cobra.Command) *planOptionsFlags {
 	return &flags
 }
 
-func createSchemaSourceFlags(cmd *cobra.Command, prefix string) *schemaSourceFactoryFlags {
+func createSchemaSourceFlags(cmd *cobra.Command, prefix string, schemaLifecycle string) *schemaSourceFactoryFlags {
 	var p schemaSourceFactoryFlags
 
 	p.schemaDirFlagName = prefix + "dir"
-	cmd.Flags().StringArrayVar(&p.schemaDirs, p.schemaDirFlagName, nil, "Directory of .SQL files to use as the schema source (can be multiple).")
+	cmd.Flags().StringArrayVar(&p.schemaDirs, p.schemaDirFlagName, nil, fmt.Sprintf("Directory of .SQL files to use as the %s schema source (can be multiple).", schemaLifecycle))
 	if err := cmd.MarkFlagDirname(p.schemaDirFlagName); err != nil {
 		stdlog.Printf("Program exiting: Failed to mark flag dirname for %s: %v", p.schemaDirFlagName, err)
 		os.Exit(1)
 	}
 
-	p.connFlags = createConnectionFlags(cmd, prefix, " The database to use as the schema source")
+	p.connFlags = createConnectionFlags(cmd, prefix, fmt.Sprintf(" The database to use as the %s schema source", schemaLifecycle))
 
 	return &p
 }
@@ -277,7 +293,7 @@ func timeoutModifierFlagVar(cmd *cobra.Command, p *[]string, timeoutType string,
 	cmd.Flags().StringArrayVarP(p, flagName, shorthand, nil, description)
 }
 
-func parseSchemaSource(p schemaSourceFactoryFlags) (schemaSourceFactory, error) {
+func parseSchemaSource(p schemaSourceFactoryFlags, schemaLifecycle string) (schemaSourceFactory, error) {
 	// Store result in a var instead of returning early to ensure only one option is set.
 	var ssf schemaSourceFactory
 
@@ -293,7 +309,7 @@ func parseSchemaSource(p schemaSourceFactoryFlags) (schemaSourceFactory, error) 
 
 	if p.connFlags.IsSet() {
 		if ssf != nil {
-			return nil, fmt.Errorf("only one of --%s or --%s can be set", p.schemaDirFlagName, p.connFlags.dsnFlagName)
+			return nil, fmt.Errorf("only one of --%s or --%s can be set for the %s schema source", p.schemaDirFlagName, p.connFlags.dsnFlagName, schemaLifecycle)
 		}
 		connConfig, err := parseConnectionFlags(p.connFlags)
 		if err != nil {
@@ -303,7 +319,7 @@ func parseSchemaSource(p schemaSourceFactoryFlags) (schemaSourceFactory, error) 
 	}
 
 	if ssf == nil {
-		return nil, fmt.Errorf("either --%s or --%s must be set", p.schemaDirFlagName, p.connFlags.dsnFlagName)
+		return nil, fmt.Errorf("either --%s or --%s must be set for the %s schema source", p.schemaDirFlagName, p.connFlags.dsnFlagName, schemaLifecycle)
 	}
 	return ssf, nil
 }
@@ -634,4 +650,32 @@ func planToSql(plan diff.Plan) string {
 		}
 	}
 	return sb.String()
+}
+
+func writeOutputToFile(outputFile, output string) error {
+	f, err := os.Create(outputFile)
+	if err != nil {
+		return fmt.Errorf("creating output file: %w", err)
+	}
+	defer f.Close()
+
+	if _, err := f.WriteString(output); err != nil {
+		return fmt.Errorf("writing output to file: %w", err)
+	}
+	return nil
+}
+
+func savePlanToJsonFile(savePlanFile string, plan diff.Plan) error {
+	f, err := os.Create(savePlanFile)
+	if err != nil {
+		return fmt.Errorf("creating save plan file: %w", err)
+	}
+	defer f.Close()
+
+	encoder := json.NewEncoder(f)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(plan); err != nil {
+		return fmt.Errorf("encoding plan to JSON: %w", err)
+	}
+	return nil
 }

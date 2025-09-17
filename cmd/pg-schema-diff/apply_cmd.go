@@ -21,7 +21,7 @@ func buildApplyCmd() *cobra.Command {
 	}
 
 	connFlags := createConnectionFlags(cmd, "from-", " The database to migrate")
-	toSchemaFlags := createSchemaSourceFlags(cmd, "to-")
+	toSchemaFlags := createSchemaSourceFlags(cmd, "to-", "The database to migrate to")
 	planOptsFlags := createPlanOptionsFlags(cmd)
 	allowedHazardsTypesStrs := cmd.Flags().StringSlice("allow-hazards", nil,
 		"Specify the hazards that are allowed. Order does not matter, and duplicates are ignored. If the"+
@@ -29,7 +29,7 @@ func buildApplyCmd() *cobra.Command {
 			" (example: --allow-hazards DELETES_DATA,INDEX_BUILD)")
 	skipConfirmPrompt := cmd.Flags().Bool("skip-confirm-prompt", false, "Skips prompt asking for user to confirm before applying")
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		logger := log.SimpleLogger()
+		logger := log.SimpleLogger(false)
 
 		connConfig, err := parseConnectionFlags(connFlags)
 		if err != nil {
@@ -37,7 +37,7 @@ func buildApplyCmd() *cobra.Command {
 		}
 		fromSchema := dsnSchemaSource(connConfig)
 
-		toSchema, err := parseSchemaSource(*toSchemaFlags)
+		toSchema, err := parseSchemaSource(*toSchemaFlags, "to")
 		if err != nil {
 			return err
 		}
@@ -72,11 +72,11 @@ func buildApplyCmd() *cobra.Command {
 
 		if !*skipConfirmPrompt {
 			if err := mustContinuePrompt(
-				fmt.Sprintf(
-					"Apply migration with the following hazards: %s?",
-					strings.Join(*allowedHazardsTypesStrs, ", "),
-				),
-			); err != nil {
+					fmt.Sprintf(
+						"Apply migration with the following hazards: %s?",
+						strings.Join(*allowedHazardsTypesStrs, ", "),
+					),
+				); err != nil {
 				return err
 			}
 		}
@@ -90,6 +90,7 @@ func buildApplyCmd() *cobra.Command {
 
 	return cmd
 }
+
 
 func failIfHazardsNotAllowed(plan diff.Plan, allowedHazardsTypesStrs []string) error {
 	isAllowedByHazardType := make(map[diff.MigrationHazardType]bool)
