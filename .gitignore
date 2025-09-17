@@ -1,4 +1,4 @@
-# Mac OS X files
+Mac OS X files
 .DS_Store
 
 # Binaries for programs and plugins
@@ -24,3 +24,4 @@ vendor/
 
 # Intellij
 .idea/
+pg-schema-diff
