@@ -53,9 +53,10 @@ func buildPlanCmd() *cobra.Command {
 	)
 	outputFile := cmd.Flags().String("output-file", "", "If set, will write the output to the specified file instead of stdout")
 	savePlan := cmd.Flags().String("save-plan", "", "If set, will save the generated plan to the specified file as JSON")
+	verbose := cmd.Flags().Bool("verbose", false, "If set, will enable verbose logging")
 
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		logger := log.SimpleLogger(false)
+		logger := log.SimpleLogger(*verbose)
 
 		fromSchema, err := parseSchemaSource(*fromSchemaFlags, "from")
 		if err != nil {
@@ -491,6 +492,7 @@ func generatePlan(
 	ctx context.Context,
 	params generatePlanParameters,
 ) (diff.Plan, error) {
+	params.logger.Debugf("Creating temporary database factory")
 	tempDbFactory, err := tempdb.NewOnInstanceFactory(ctx, func(ctx context.Context, dbName string) (*sql.DB, error) {
 		cfg := params.tempDbConnConfig.Copy()
 		cfg.Database = dbName
@@ -506,18 +508,21 @@ func generatePlan(
 		}
 	}()
 
+	params.logger.Debugf("Creating 'from' schema source")
 	fromSchema, fromSchemaSourceCloser, err := params.fromSchema()
 	if err != nil {
 		return diff.Plan{}, fmt.Errorf("creating schema source: %w", err)
 	}
 	defer fromSchemaSourceCloser.Close()
 
+	params.logger.Debugf("Creating 'to' schema source")
 	toSchema, toSchemaSourceCloser, err := params.toSchema()
 	if err != nil {
 		return diff.Plan{}, fmt.Errorf("creating schema source: %w", err)
 	}
 	defer toSchemaSourceCloser.Close()
 
+	params.logger.Debugf("Generating plan")
 	plan, err := diff.Generate(ctx, fromSchema, toSchema,
 		append(
 			params.planOptions.opts,
@@ -527,7 +532,7 @@ func generatePlan(
 	if err != nil {
 		return diff.Plan{}, fmt.Errorf("generating plan: %w", err)
 	}
-
+	params.logger.Debugf("Applying plan modifiers")
 	modifiedPlan, err := applyPlanModifiers(
 		plan,
 		params.planOptions,
@@ -535,6 +540,7 @@ func generatePlan(
 	if err != nil {
 		return diff.Plan{}, fmt.Errorf("applying plan modifiers: %w", err)
 	}
+	params.logger.Infof("Plan generation complete")
 
 	return modifiedPlan, nil
 }
