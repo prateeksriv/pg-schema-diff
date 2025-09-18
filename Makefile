@@ -55,3 +55,5 @@ testrun: build
 		--output-format sql \
 		--output-file ./schema-versioning/migrations/0068_up.sql
 
+test: build
+	go test -v -race ./... -timeout 30m
