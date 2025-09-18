@@ -114,6 +114,7 @@ func buildPlanCmd() *cobra.Command {
 			tempDbConnConfig: tempDbConnConfig,
 			planOptions:      planOpts,
 			logger:           logger,
+			outputFile:       *outputFile,
 		})
 		if err != nil {
 			logger.Errorf("Program exiting: Failed to generate plan: %v", err)
@@ -535,6 +536,7 @@ type generatePlanParameters struct {
 	tempDbConnConfig *pgx.ConnConfig
 	planOptions      planOptions
 	logger           log.Logger
+	outputFile       string
 }
 
 func generatePlan(
@@ -572,10 +574,17 @@ func generatePlan(
 	defer toSchemaSourceCloser.Close()
 
 	params.logger.Debugf("Generating plan")
+	planOpts := []diff.PlanOpt{
+		diff.WithTempDbFactory(tempDbFactory),
+	}
+	if params.outputFile != "" {
+		planOpts = append(planOpts, diff.WithOutputFile(params.outputFile))
+	}
+
 	plan, err := diff.Generate(ctx, fromSchema, toSchema,
 		append(
 			params.planOptions.opts,
-			diff.WithTempDbFactory(tempDbFactory),
+			planOpts...,
 		)...,
 	)
 	if err != nil {
