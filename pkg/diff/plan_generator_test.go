@@ -104,7 +104,7 @@ func (suite *planGeneratorTestSuite) TestGenerate() {
 	tempDbFactory := suite.mustBuildTempDbFactory(context.Background())
 	defer tempDbFactory.Close()
 
-	plan, err := Generate(context.Background(), DBSchemaSource(connPool), DDLSchemaSource([]string{newSchemaDDL}), WithTempDbFactory(tempDbFactory))
+	plan, err := Generate(context.Background(), DBSchemaSource(connPool), DDLSchemaSource([]string{newSchemaDDL}, log.SimpleLogger(true)), WithTempDbFactory(tempDbFactory))
 	suite.NoError(err)
 
 	suite.mustApplyMigrationPlan(connPool, plan)
@@ -119,7 +119,7 @@ func (suite *planGeneratorTestSuite) TestGeneratePlan_SchemaSourceErr() {
 	tempDbFactory := suite.mustBuildTempDbFactory(context.Background())
 	defer tempDbFactory.Close()
 
-	logger := log.SimpleLogger()
+	logger := log.SimpleLogger(true)
 
 	getSchemaOpts := []externalschema.GetSchemaOpt{
 		externalschema.WithIncludeSchemas("schema_1"),
@@ -174,7 +174,7 @@ func (suite *planGeneratorTestSuite) TestGenerate_CannotPackNewTablesWithoutIgno
 func (suite *planGeneratorTestSuite) TestGenerate_CannotBuildMigrationFromDDLWithoutTempDbFactory() {
 	pool := suite.mustGetTestDBPool()
 	defer pool.Close()
-	_, err := Generate(context.Background(), DBSchemaSource(pool), DDLSchemaSource([]string{``}),
+	_, err := Generate(context.Background(), DBSchemaSource(pool), DDLSchemaSource([]string{``}, log.SimpleLogger(true)),
 		WithIncludeSchemas("public"),
 		WithDoNotValidatePlan(),
 	)
@@ -184,7 +184,7 @@ func (suite *planGeneratorTestSuite) TestGenerate_CannotBuildMigrationFromDDLWit
 func (suite *planGeneratorTestSuite) TestGenerate_CannotValidateWithoutTempDbFactory() {
 	pool := suite.mustGetTestDBPool()
 	defer pool.Close()
-	_, err := Generate(context.Background(), DBSchemaSource(pool), DDLSchemaSource([]string{``}),
+	_, err := Generate(context.Background(), DBSchemaSource(pool), DDLSchemaSource([]string{``}, log.SimpleLogger(true)),
 		WithIncludeSchemas("public"),
 		WithDoNotValidatePlan(),
 	)

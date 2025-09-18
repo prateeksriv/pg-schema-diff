@@ -122,7 +122,7 @@ func getDDLFromPath(path string, logger log.Logger) ([]ddlStatement, error) {
 
 // DDLSchemaSource returns a SchemaSource that returns a schema based on the provided DDL. You must provide a tempDBFactory
 // via the WithTempDbFactory option.
-func DDLSchemaSource(stmts []string) SchemaSource {
+func DDLSchemaSource(stmts []string, logger log.Logger) SchemaSource {
 	var ddl []ddlStatement
 	for _, stmt := range stmts {
 		ddl = append(ddl, ddlStatement{
@@ -131,7 +131,7 @@ func DDLSchemaSource(stmts []string) SchemaSource {
 			file: "",
 		})
 	}
-
+	logger.Debugf("DDLSchemaSource created with %d statements", len(stmts))
 	return &ddlSchemaSource{ddl: ddl}
 }
 

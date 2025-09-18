@@ -55,10 +55,12 @@ func buildPlanCmd() *cobra.Command {
 	savePlan := cmd.Flags().Bool("save-plan", false, "If set, will save the generated plan to the specified file as JSON")
 	planFile := cmd.Flags().String("plan-file", "migration_plan.txt", "The filename to save the plan to when --save-plan is provided")
 	verbose := cmd.Flags().Bool("verbose", false, "If set, will enable verbose logging")
+	debug := cmd.Flags().Bool("debug", false, "If set, will enable debug logging (implies --verbose)")
 
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		stdlog.Printf("DEBUG: verbose flag value: %v", *verbose)
-		logger := log.SimpleLogger(*verbose)
+		stdlog.Printf("DEBUG: debug flag value: %v", *debug)
+		logger := log.SimpleLogger(*verbose, *debug)
 
 		logger.Debugf("Parsing 'from' schema source flags")
 		fromSchema, err := parseSchemaSource(*fromSchemaFlags, "from", logger)
@@ -126,8 +128,11 @@ func buildPlanCmd() *cobra.Command {
 			}
 			logger.Infof("Wrote %d lines to output file %s", len(strings.Split(output, "\n")), *outputFile)
 		} else {
-			logger.Debugf("Printing output to stdout")
-			cmdPrintln(cmd, output)
+			logger.Debugf("Saving plan output to file: %s", *planFile)
+			if err := writeOutputToFile(*planFile, output); err != nil {
+				return err
+			}
+			logger.Infof("diff.Plan with %d lines was saved to file: %s", len(strings.Split(output, "\n")), *planFile)
 		}
 
 		if *savePlan {

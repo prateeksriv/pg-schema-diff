@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -129,7 +130,7 @@ func Generate(
 	planOptions := &planOptions{
 		validatePlan:            true,
 		ignoreChangesToColOrder: true,
-		logger:                  log.SimpleLogger(false),
+		logger:                  log.SimpleLogger(false, false),
 		randReader:              rand.Reader,
 	}
 	for _, opt := range opts {
@@ -173,7 +174,8 @@ func Generate(
 			return Plan{}, fmt.Errorf("cannot validate plan without a tempDbFactory: %w", errTempDbFactoryRequired)
 		}
 		if err := assertValidPlan(ctx, planOptions.tempDbFactory, currentSchema, newSchema, plan, planOptions); err != nil {
-			return Plan{}, fmt.Errorf("validating migration plan: %w \n%# v", err, pretty.Formatter(plan))
+			planFilePath, statementsFilePath := writePlanAndStatementsToFiles(plan, planOptions.logger)
+			return Plan{}, fmt.Errorf("validating migration plan: %w. See logs for detailed plan in %s and statements in %s.", err, planFilePath, statementsFilePath)
 		}
 	}
 
@@ -295,8 +297,8 @@ func assertMigratedSchemaMatchesTarget(migratedSchema, targetSchema schema.Schem
 		for _, stmt := range toTargetSchemaStmts {
 			stmtsStrs = append(stmtsStrs, stmt.DDL)
 		}
-		planOptions.logger.Infof("Unexpected statements when migrating from migrated schema to target schema:\n%s", strings.Join(stmtsStrs, "\n"))
-		return fmt.Errorf("validating plan failed. diff detected:\n%s", strings.Join(stmtsStrs, "\n"))
+		planOptions.logger.Errorf("Unexpected statements when migrating from migrated schema to target schema:\n%s", strings.Join(stmtsStrs, "\n"))
+		return fmt.Errorf("validating plan failed. diff detected. See logs for detailed statements.")
 	}
 
 	return nil
@@ -327,4 +329,41 @@ func executeStatementsIgnoreTimeouts(ctx context.Context, connPool *sql.DB, stat
 		}
 	}
 	return nil
+}
+
+func writePlanAndStatementsToFiles(plan Plan, logger log.Logger) (planFilePath string, statementsFilePath string) {
+	planFile, err := os.CreateTemp("", "plan-*.txt")
+	if err != nil {
+		logger.Errorf("Error creating temporary file for plan: %v", err)
+		return "", ""
+	}
+	defer planFile.Close()
+
+	if _, err := planFile.WriteString(pretty.Sprint(plan)); err != nil {
+		logger.Errorf("Error writing plan to file: %v", err)
+		return "", ""
+	}
+	planFilePath = planFile.Name()
+	logger.Errorf("Detailed plan written to: %s", planFilePath)
+
+	statementsFile, err := os.CreateTemp("", "statements-*.sql")
+	if err != nil {
+		logger.Errorf("Error creating temporary file for statements: %v", err)
+		return planFilePath, ""
+	}
+	defer statementsFile.Close()
+
+	var sb strings.Builder
+	for _, stmt := range plan.Statements {
+		sb.WriteString(stmt.ToSQL())
+		sb.WriteString("\n")
+	}
+	if _, err := statementsFile.WriteString(sb.String()); err != nil {
+		logger.Errorf("Error writing statements to file: %v", err)
+		return planFilePath, ""
+	}
+	statementsFilePath = statementsFile.Name()
+	logger.Errorf("Detailed statements written to: %s", statementsFilePath)
+
+	return planFilePath, statementsFilePath
 }

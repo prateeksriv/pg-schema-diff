@@ -148,7 +148,7 @@ func NewOnInstanceFactory(ctx context.Context, createConnPoolForDb CreateConnPoo
 		metadataTable:  DefaultOnInstanceMetadataTable,
 		dropTimeout:    DefaultStatementTimeout,
 		rootDatabase:   "postgres",
-		logger:         log.SimpleLogger(false),
+		logger:         log.SimpleLogger(false, false),
 		randReader:     rand.Reader,
 	}
 	for _, opt := range opts {

@@ -28,8 +28,10 @@ func buildApplyCmd() *cobra.Command {
 			" migration plan contains unwanted hazards (hazards not in this list), then the migration will fail to run"+
 			" (example: --allow-hazards DELETES_DATA,INDEX_BUILD)")
 	skipConfirmPrompt := cmd.Flags().Bool("skip-confirm-prompt", false, "Skips prompt asking for user to confirm before applying")
+	verbose := cmd.Flags().Bool("verbose", false, "If set, will enable verbose logging")
+	debug := cmd.Flags().Bool("debug", false, "If set, will enable debug logging (implies --verbose)")
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		logger := log.SimpleLogger(false)
+		logger := log.SimpleLogger(*verbose, *debug)
 
 		connConfig, err := parseConnectionFlags(connFlags)
 		if err != nil {
