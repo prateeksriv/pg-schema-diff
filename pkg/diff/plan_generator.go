@@ -211,6 +211,10 @@ func assertValidPlan(ctx context.Context,
 	plan Plan,
 	planOptions *planOptions,
 ) error {
+	planOptions.logger.Infof("Asserting valid plan...")
+	planOptions.logger.Infof("Current schema: %s", pretty.Sprint(currentSchema))
+	planOptions.logger.Infof("New schema: %s", pretty.Sprint(newSchema))
+
 	tempDb, err := tempDbFactory.Create(ctx)
 	if err != nil {
 		return err
@@ -236,6 +240,7 @@ func assertValidPlan(ctx context.Context,
 	if err != nil {
 		return fmt.Errorf("fetching schema from migrated database: %w", err)
 	}
+	planOptions.logger.Infof("Migrated schema: %s", pretty.Sprint(migratedSchema))
 
 	return assertMigratedSchemaMatchesTarget(migratedSchema, newSchema, planOptions)
 }
@@ -290,6 +295,7 @@ func assertMigratedSchemaMatchesTarget(migratedSchema, targetSchema schema.Schem
 		for _, stmt := range toTargetSchemaStmts {
 			stmtsStrs = append(stmtsStrs, stmt.DDL)
 		}
+		planOptions.logger.Infof("Unexpected statements when migrating from migrated schema to target schema:\n%s", strings.Join(stmtsStrs, "\n"))
 		return fmt.Errorf("validating plan failed. diff detected:\n%s", strings.Join(stmtsStrs, "\n"))
 	}
 

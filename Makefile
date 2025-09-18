@@ -1,5 +1,5 @@
 # Sort targets alphabetically.
-.PHONY: build code_gen format go_lint go_lint_fix go_mod_tidy install lint multiline_sql_strings_lint_fix run sqlc sql_lint sql_lint_fix user-install vendor
+.PHONY: build code_gen format go_lint go_lint_fix go_mod_tidy install lint multiline_sql_strings_lint_fix run sqlc sql_lint sql_lint_fix user-install vendor test test-simple
 
 build:
 	go build -o pg-schema-diff ./cmd/pg-schema-diff
@@ -44,3 +44,14 @@ user-install:
 
 vendor:
 	go mod vendor
+
+test: build
+	./pg-schema-diff plan --verbose \
+		--from-file /home/prateek/PROJECTS/ExpenseFlow/pg-schema-diff/schema-versioning/staged-version/_init.sql \
+		--from-file /home/prateek/PROJECTS/ExpenseFlow/pg-schema-diff/schema-versioning/staged-version/public_schema.sql \
+		--to-file /home/prateek/PROJECTS/ExpenseFlow/pg-schema-diff/schema-versioning/next-version/compare/_init.sql \
+		--to-file /home/prateek/PROJECTS/ExpenseFlow/pg-schema-diff/schema-versioning/next-version/compare/public_schema.sql \
+		--temp-db-dsn 'postgresql://xflow_user:rat12cat@localhost:5432/xflow_temp?sslmode=disable' \
+		--output-format sql \
+		--output-file ./schema-versioning/migrations/0068_up.sql
+

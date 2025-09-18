@@ -37,7 +37,7 @@ func buildApplyCmd() *cobra.Command {
 		}
 		fromSchema := dsnSchemaSource(connConfig)
 
-		toSchema, err := parseSchemaSource(*toSchemaFlags, "to")
+		toSchema, err := parseSchemaSource(*toSchemaFlags, "to", logger)
 		if err != nil {
 			return err
 		}

@@ -19,6 +19,7 @@ func buildRootCmd() *cobra.Command {
 
 func main() {
 	if err := buildRootCmd().Execute(); err != nil {
+
 		os.Exit(1)
 	}
 }

@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"os"
 	stdlog "log"
+	"os"
 
 	"github.com/jackc/pgx/v4"
 	"github.com/spf13/cobra"
@@ -49,24 +49,26 @@ func buildPlanCmd() *cobra.Command {
 	cmd.Flags().Var(
 		&outputFmt,
 		"output-format",
-		fmt.Sprintf("Change the output format for what is printed. Defaults to %v. (options: %s)", outputFmt.identifier, strings.Join(outputFormatStrings(), ", ")),
+		"Change the output format for what is printed.",
 	)
 	outputFile := cmd.Flags().String("output-file", "", "If set, will write the output to the specified file instead of stdout")
-	savePlan := cmd.Flags().String("save-plan", "", "If set, will save the generated plan to the specified file as JSON")
+	savePlan := cmd.Flags().Bool("save-plan", false, "If set, will save the generated plan to the specified file as JSON")
+	planFile := cmd.Flags().String("plan-file", "migration_plan.txt", "The filename to save the plan to when --save-plan is provided")
 	verbose := cmd.Flags().Bool("verbose", false, "If set, will enable verbose logging")
 
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		stdlog.Printf("DEBUG: verbose flag value: %v", *verbose)
 		logger := log.SimpleLogger(*verbose)
 
 		logger.Debugf("Parsing 'from' schema source flags")
-		fromSchema, err := parseSchemaSource(*fromSchemaFlags, "from")
+		fromSchema, err := parseSchemaSource(*fromSchemaFlags, "from", logger)
 		if err != nil {
 			logger.Errorf("Program exiting: Failed to parse 'from' schema source: %v", err)
 			return err
 		}
 
 		logger.Debugf("Parsing 'to' schema source flags")
-		toSchema, err := parseSchemaSource(*toSchemaFlags, "to")
+		toSchema, err := parseSchemaSource(*toSchemaFlags, "to", logger)
 		if err != nil {
 			logger.Errorf("Program exiting: Failed to parse 'to' schema source: %v", err)
 			return err
@@ -122,14 +124,15 @@ func buildPlanCmd() *cobra.Command {
 			if err := writeOutputToFile(*outputFile, output); err != nil {
 				return err
 			}
+			logger.Infof("Wrote %d lines to output file %s", len(strings.Split(output, "\n")), *outputFile)
 		} else {
 			logger.Debugf("Printing output to stdout")
 			cmdPrintln(cmd, output)
 		}
 
-		if *savePlan != "" {
-			logger.Debugf("Saving plan to JSON file: %s", *savePlan)
-			if err := savePlanToJsonFile(*savePlan, plan); err != nil {
+		if *savePlan {
+			logger.Debugf("Saving plan to JSON file: %s", *planFile)
+			if err := savePlanToJsonFile(*planFile, plan); err != nil {
 				return err
 			}
 		}
@@ -182,8 +185,12 @@ type (
 	// schemaSourceFactoryFlags stores the flags that are parsed into a schemaSourceFactory.
 	schemaSourceFactoryFlags struct {
 		// schemaDirs should be provided if the schema is defined via SQL files.
-		schemaDirs        []string
+		schemaDirs        string
 		schemaDirFlagName string
+
+		// schemaFiles should be provided if the schema is defined via a list of SQL files.
+		schemaFiles         []string
+		schemaFilesFlagName string
 
 		// connFlags should be provided if the schema is defined through a database.
 		connFlags *connectionFlags
@@ -254,22 +261,17 @@ func createPlanOptionsFlags(cmd *cobra.Command) *planOptionsFlags {
 	cmd.Flags().StringArrayVar(&flags.excludeSchemas, "exclude-schema", nil, "Exclude the specified schema in the plan")
 
 	cmd.Flags().BoolVar(&flags.dataPackNewTables, "data-pack-new-tables", true, "If set, will data pack new tables in the plan to minimize table size (re-arranges columns).")
-	cmd.Flags().BoolVar(&flags.disablePlanValidation, "disable-plan-validation", false, "If set, will disable plan validation. Plan validation runs the migration against a temporary"+
-		"database with an identical schema to the original, asserting that the generated plan actually migrates the schema to the desired target.")
-	cmd.Flags().BoolVar(&flags.noConcurrentIndexOps, "no-concurrent-index-ops", false, "If set, will disable the use of CONCURRENTLY in CREATE INDEX and DROP INDEX statements. "+
-		"This may result in longer lock times and potential downtime during migrations.")
+	cmd.Flags().BoolVar(&flags.disablePlanValidation, "disable-plan-validation", false, "If set, will disable plan validation. Plan validation runs the migration against a temporary database with an identical schema to the original, asserting that the generated plan actually migrates the schema to the desired target.")
+	cmd.Flags().BoolVar(&flags.noConcurrentIndexOps, "no-concurrent-index-ops", false, "If set, will disable the use of CONCURRENTLY in CREATE INDEX and DROP INDEX statements. This may result in longer lock times and potential downtime during migrations.")
 
 	timeoutModifierFlagVar(cmd, &flags.statementTimeoutModifiers, "statement", "t")
 	timeoutModifierFlagVar(cmd, &flags.lockTimeoutModifiers, "lock", "l")
 	cmd.Flags().StringArrayVarP(
 		&flags.insertStatements,
-		"insert-statement", "s", nil,
-		fmt.Sprintf(
-			"'%s=<index> %s=\"<statement>\" %s=<duration> %s=<duration>' values. Will insert the statement at the index in the "+
-				"generated plan. This follows normal insert semantics. Example: -s '%s=1 %s=\"SELECT pg_sleep(5)\" %s=5s %s=1s'",
-			indexInsertStatementKey, statementInsertStatementKey, statementTimeoutInsertStatementKey, lockTimeoutInsertStatementKey,
-			indexInsertStatementKey, statementInsertStatementKey, statementTimeoutInsertStatementKey, lockTimeoutInsertStatementKey,
-		),
+		"insert-statement",
+		"s",
+		nil,
+		fmt.Sprintf(`'%s=<index> %s=" <statement> " %s=<duration> %s=<duration>' values. Will insert the statement at the index in the generated plan. This follows normal insert semantics. Example: -s '%s=1 %s="SELECT pg_sleep(5)" %s=5s %s=1s'`, indexInsertStatementKey, statementInsertStatementKey, statementTimeoutInsertStatementKey, lockTimeoutInsertStatementKey, indexInsertStatementKey, statementInsertStatementKey, statementTimeoutInsertStatementKey, lockTimeoutInsertStatementKey),
 	)
 
 	return &flags
@@ -279,11 +281,14 @@ func createSchemaSourceFlags(cmd *cobra.Command, prefix string, schemaLifecycle 
 	var p schemaSourceFactoryFlags
 
 	p.schemaDirFlagName = prefix + "dir"
-	cmd.Flags().StringArrayVar(&p.schemaDirs, p.schemaDirFlagName, nil, fmt.Sprintf("Directory of .SQL files to use as the %s schema source (can be multiple).", schemaLifecycle))
+	cmd.Flags().StringVar(&p.schemaDirs, p.schemaDirFlagName, "", fmt.Sprintf("Directory of .SQL files to use as the %s schema source.", schemaLifecycle))
 	if err := cmd.MarkFlagDirname(p.schemaDirFlagName); err != nil {
 		stdlog.Printf("Program exiting: Failed to mark flag dirname for %s: %v", p.schemaDirFlagName, err)
 		os.Exit(1)
 	}
+
+	p.schemaFilesFlagName = prefix + "file"
+	cmd.Flags().StringArrayVar(&p.schemaFiles, p.schemaFilesFlagName, nil, fmt.Sprintf("List of .SQL files to use as the %s schema source.", schemaLifecycle))
 
 	p.connFlags = createConnectionFlags(cmd, prefix, fmt.Sprintf(" The database to use as the %s schema source", schemaLifecycle))
 
@@ -292,9 +297,7 @@ func createSchemaSourceFlags(cmd *cobra.Command, prefix string, schemaLifecycle 
 
 func timeoutModifierFlagVar(cmd *cobra.Command, p *[]string, timeoutType string, shorthand string) {
 	flagName := fmt.Sprintf("%s-timeout-modifier", timeoutType)
-	description := fmt.Sprintf("list of '%s=\"<regex>\" %s=<duration>', where if a statement matches "+
-		"the regex, the statement will have the target %s timeout. If multiple regexes match, the latest regex will "+
-		"take priority. Example: -t '%s=\"CREATE TABLE\" %s=5m'",
+	description := fmt.Sprintf("list of '%s=\" <regex> \" %s=<duration>', where if a statement matches the regex, the statement will have the target %s timeout. If multiple regexes match, the latest regex will take priority. Example: -t '%s=\"CREATE TABLE\" %s=5m'",
 		patternTimeoutModifierKey, timeoutTimeoutModifierKey,
 		timeoutType,
 		patternTimeoutModifierKey, timeoutTimeoutModifierKey,
@@ -302,14 +305,32 @@ func timeoutModifierFlagVar(cmd *cobra.Command, p *[]string, timeoutType string,
 	cmd.Flags().StringArrayVarP(p, flagName, shorthand, nil, description)
 }
 
-func parseSchemaSource(p schemaSourceFactoryFlags, schemaLifecycle string) (schemaSourceFactory, error) {
+func parseSchemaSource(p schemaSourceFactoryFlags, schemaLifecycle string, logger log.Logger) (schemaSourceFactory, error) {
+	stdlog.Printf("DEBUG: schemaDirs for %s: %v", schemaLifecycle, p.schemaDirs)
+	logger.Debugf("Attempting to parse schema source for %s. schemaDirs: %v, schemaDirFlagName: %s", schemaLifecycle, p.schemaDirs, p.schemaDirFlagName)
 	// Store result in a var instead of returning early to ensure only one option is set.
 	var ssf schemaSourceFactory
 
-	if len(p.schemaDirs) > 0 {
-		stdlog.Printf("[DEBUG] Parsing schema source from directories: %v", p.schemaDirs)
+	if p.schemaDirs != "" {
+		stdlog.Printf("[DEBUG] Parsing schema source from directory: %v", p.schemaDirs)
+		logger.Infof("Parsing schema source for %s from directory: %s", schemaLifecycle, p.schemaDirs)
 		ssf = func() (diff.SchemaSource, io.Closer, error) {
-			schemaSource, err := diff.DirSchemaSource(p.schemaDirs)
+			schemaSource, err := diff.DirSchemaSource(p.schemaDirs, logger)
+			if err != nil {
+				return nil, nil, err
+			}
+			return schemaSource, util.NoOpCloser(), nil
+		}
+	}
+
+	if len(p.schemaFiles) > 0 {
+		if ssf != nil {
+			return nil, fmt.Errorf("only one of --%s or --%s can be set for the %s schema source", p.schemaDirFlagName, p.schemaFilesFlagName, schemaLifecycle)
+		}
+		stdlog.Printf("[DEBUG] Parsing schema source from files: %v", p.schemaFiles)
+		logger.Infof("Parsing schema source for %s from files: %s", schemaLifecycle, strings.Join(p.schemaFiles, ", "))
+		ssf = func() (diff.SchemaSource, io.Closer, error) {
+			schemaSource, err := diff.FilesSchemaSource(p.schemaFiles, logger)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -320,7 +341,7 @@ func parseSchemaSource(p schemaSourceFactoryFlags, schemaLifecycle string) (sche
 	if p.connFlags.IsSet() {
 		stdlog.Printf("[DEBUG] Parsing schema source from connection flags")
 		if ssf != nil {
-			return nil, fmt.Errorf("only one of --%s or --%s can be set for the %s schema source", p.schemaDirFlagName, p.connFlags.dsnFlagName, schemaLifecycle)
+			return nil, fmt.Errorf("only one of --%s, --%s, or --%s can be set for the %s schema source", p.schemaDirFlagName, p.schemaFilesFlagName, p.connFlags.dsnFlagName, schemaLifecycle)
 		}
 		connConfig, err := parseConnectionFlags(p.connFlags)
 		if err != nil {
@@ -330,7 +351,7 @@ func parseSchemaSource(p schemaSourceFactoryFlags, schemaLifecycle string) (sche
 	}
 
 	if ssf == nil {
-		return nil, fmt.Errorf("either --%s or --%s must be set for the %s schema source", p.schemaDirFlagName, p.connFlags.dsnFlagName, schemaLifecycle)
+		return nil, fmt.Errorf("either --%s, --%s or --%s must be set for the %s schema source", p.schemaDirFlagName, p.schemaFilesFlagName, p.connFlags.dsnFlagName, schemaLifecycle)
 	}
 	stdlog.Printf("[DEBUG] Schema source parsed successfully for %s", schemaLifecycle)
 	return ssf, nil
@@ -428,7 +449,7 @@ func parseTimeoutModifier(val string) (timeoutModifier, error) {
 	}
 
 	if len(fm) > 0 {
-		return timeoutModifier{}, fmt.Errorf("unknown keys %s", keys(fm))
+		return timeoutModifier{}, fmt.Errorf("unknown keys: %v", getMapKeys(fm))
 	}
 
 	duration, err := time.ParseDuration(timeoutStr)
@@ -476,7 +497,7 @@ func parseInsertStatementStr(val string) (insertStatement, error) {
 	}
 
 	if len(fm) > 0 {
-		return insertStatement{}, fmt.Errorf("unknown keys %s", keys(fm))
+		return insertStatement{}, fmt.Errorf("unknown keys: %v", getMapKeys(fm))
 	}
 
 	index, err := strconv.Atoi(indexStr)
@@ -604,7 +625,7 @@ func planToPrettyS(plan diff.Plan) string {
 		return sb.String()
 	}
 
-	sb.WriteString(fmt.Sprintf("%s\n", header("Generated plan")))
+	sb.WriteString(fmt.Sprintf("%s\n", createHeader("Generated plan")))
 
 	// We are going to put a statement index before each statement. To do that,
 	// we need to find how many characters are in the largest index, so we can provide the appropriate amount
@@ -618,7 +639,7 @@ func planToPrettyS(plan diff.Plan) string {
 
 	var stmtStrs []string
 	for i, stmt := range plan.Statements {
-		stmtStr := fmt.Sprintf(fmtString, getDisplayableStmtIdx(i), statementToPrettyS(stmt))
+		stmtStr := fmt.Sprintf(fmtString, getDisplayableStmtIdxPlan(i), statementToPrettyS(stmt))
 		stmtStrs = append(stmtStrs, stmtStr)
 	}
 	sb.WriteString(strings.Join(stmtStrs, "\n\n"))
@@ -707,4 +728,26 @@ func savePlanToJsonFile(savePlanFile string, plan diff.Plan) error {
 		return fmt.Errorf("encoding plan to JSON: %w", err)
 	}
 	return nil
+}
+
+// Helper functions to fix missing references
+
+func getMapKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+func getDisplayableStmtIdxPlan(i int) int {
+	return i + 1
+}
+
+func createHeader(text string) string {
+	return fmt.Sprintf("=== %s ===", text)
+}
+
+func cmdPrintlnPlan(cmd *cobra.Command, output string) {
+	cmd.Println(output)
 }

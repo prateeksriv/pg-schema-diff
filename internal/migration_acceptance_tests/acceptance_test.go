@@ -6,6 +6,7 @@ import (
 	"fmt"
 	stdlog "log"
 	"os"
+	"strings" // Added for strings.Count
 	"testing"
 
 	"github.com/google/uuid"
@@ -33,27 +34,27 @@ type (
 		name string
 
 		// planOpts is a list of options that should be passed to the plan generator
-		planOpts []diff.PlanOpt
+	planOpts []diff.PlanOpt
 
 		// roles is a list of roles that should be created before the DDL is applied
-		roles        []string
-		oldSchemaDDL []string
-		newSchemaDDL []string
+	roles        []string
+	oldSchemaDDL []string
+	newSchemaDDL []string
 
 		// planFactory is used to generate the actual plan. This is useful for testing different plan generation paths
 		// outside of the normal path. If not specified, a plan will be generated using a default.
-		planFactory planFactory
+	planFactory planFactory
 
 		// expectedHazardTypes should contain all the unique migration hazard types that are expected to be within the
 		// generated plan
-		expectedHazardTypes       []diff.MigrationHazardType
-		expectedPlanErrorIs       error
-		expectedPlanErrorContains string
+	expectedHazardTypes       []diff.MigrationHazardType
+	expectedPlanErrorIs       error
+	expectedPlanErrorContains string
 		// expectedPlanDDL is used to assert the exact DDL (of the statements) that  generated. This is useful when asserting
 		// exactly how a migration is performed
-		expectedPlanDDL []string
+	expectedPlanDDL []string
 		// expectEmptyPlan asserts the plan is expectEmptyPlan
-		expectEmptyPlan bool
+	expectEmptyPlan bool
 		// expectedDBSchemaDDL should be the DDL required to reconstruct the expected output state of the database
 		//
 		// The expectedDBSchemaDDL might differ from the newSchemaDDL due to options passed to the migrator. For example,
@@ -61,7 +62,7 @@ type (
 		// the column ordering of those tables defined in newSchemaDDL
 		//
 		// If no expectedDBSchemaDDL is specified, the newSchemaDDL will be used
-		expectedDBSchemaDDL []string
+	expectedDBSchemaDDL []string
 	}
 )
 
@@ -113,7 +114,7 @@ func runTest(t *testing.T, tc acceptanceTestCase) {
 			return diff.Generate(ctx, connSource, diff.DDLSchemaSource(newSchemaDDL),
 				append(tc.planOpts,
 					diff.WithTempDbFactory(tempDbFactory),
-				)...)
+				).)
 		}
 	}
 
@@ -265,7 +266,22 @@ func getUniqueHazardTypesFromStatements(statements []diff.Statement) []diff.Migr
 }
 
 func prettySprintPlan(plan diff.Plan) string {
-	return fmt.Sprintf("%# v", pretty.Formatter(plan.Statements))
+	outputFilePath := "/home/prateek/PROJECTS/ExpenseFlow/pg-schema-diff/schema-versioning/migrations/0068_up.sql" // Use the default filename
+	formattedPlan := fmt.Sprintf("%# v", pretty.Formatter(plan.Statements))
+
+	// Write the formatted plan to the file
+	err := os.WriteFile(outputFilePath, []byte(formattedPlan), 0644)
+	if err != nil {
+		return fmt.Sprintf("Error saving diff.Plan to file %s: %v", outputFilePath, err)
+	}
+
+	// Count lines for the output message
+	numLines := 0
+	if len(formattedPlan) > 0 {
+		numLines = strings.Count(formattedPlan, "\n") + 1
+	}
+
+	return fmt.Sprintf("diff.Plan with %d lines was saved to file: %s", numLines, outputFilePath)
 }
 
 type deterministicRandReader struct {
