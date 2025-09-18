@@ -45,7 +45,7 @@ user-install:
 vendor:
 	go mod vendor
 
-test: build
+testrun: build
 	./pg-schema-diff plan --verbose --debug \
 		--from-file /home/prateek/PROJECTS/ExpenseFlow/pg-schema-diff/schema-versioning/staged-version/_init.sql \
 		--from-file /home/prateek/PROJECTS/ExpenseFlow/pg-schema-diff/schema-versioning/staged-version/public_schema.sql \

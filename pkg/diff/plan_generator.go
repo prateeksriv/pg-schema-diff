@@ -37,6 +37,7 @@ type (
 		getSchemaOpts           []schema.GetSchemaOpt
 		randReader              io.Reader
 		noConcurrentIndexOps    bool
+		outputFilePath          string
 	}
 
 	PlanOpt func(opts *planOptions)
@@ -45,6 +46,14 @@ type (
 func WithTempDbFactory(factory tempdb.Factory) PlanOpt {
 	return func(opts *planOptions) {
 		opts.tempDbFactory = factory
+	}
+}
+
+// WithOutputFile configures the plan generation to write the plan and statements to the specified file path.
+// If not provided, temporary files will be used.
+func WithOutputFile(filePath string) PlanOpt {
+	return func(opts *planOptions) {
+		opts.outputFilePath = filePath
 	}
 }
 
@@ -169,12 +178,13 @@ func Generate(
 		CurrentSchemaHash: hash,
 	}
 
+	planFilePath, statementsFilePath := writePlanAndStatementsToFiles(plan, planOptions.logger, planOptions.outputFilePath)
+
 	if planOptions.validatePlan {
 		if planOptions.tempDbFactory == nil {
 			return Plan{}, fmt.Errorf("cannot validate plan without a tempDbFactory: %w", errTempDbFactoryRequired)
 		}
 		if err := assertValidPlan(ctx, planOptions.tempDbFactory, currentSchema, newSchema, plan, planOptions); err != nil {
-			planFilePath, statementsFilePath := writePlanAndStatementsToFiles(plan, planOptions.logger)
 			return Plan{}, fmt.Errorf("validating migration plan: %w. See logs for detailed plan in %s and statements in %s.", err, planFilePath, statementsFilePath)
 		}
 	}
@@ -214,11 +224,13 @@ func assertValidPlan(ctx context.Context,
 	planOptions *planOptions,
 ) error {
 	planOptions.logger.Infof("Asserting valid plan...")
-	planOptions.logger.Infof("Current schema: %s", pretty.Sprint(currentSchema))
-	planOptions.logger.Infof("New schema: %s", pretty.Sprint(newSchema))
+	planOptions.logger.Debugf("Current schema: %s", pretty.Sprint(currentSchema))
+	planOptions.logger.Debugf("New schema: %s", pretty.Sprint(newSchema))
+	planOptions.logger.Debugf("Plan statements: %s", pretty.Sprint(plan.Statements))
 
 	tempDb, err := tempDbFactory.Create(ctx)
 	if err != nil {
+		planOptions.logger.Debugf("Error creating temporary database: %v", err)
 		return err
 	}
 	defer func(closer tempdb.ContextualCloser) {
@@ -230,20 +242,29 @@ func assertValidPlan(ctx context.Context,
 	// on the database.
 	setMaxConnectionsIfNotSet(tempDb.ConnPool, tempDbMaxConnections)
 
+	planOptions.logger.Debugf("Setting schema for empty database...")
 	if err := setSchemaForEmptyDatabase(ctx, tempDb, currentSchema, planOptions); err != nil {
+		planOptions.logger.Debugf("Error setting schema for empty database: %v", err)
 		return fmt.Errorf("inserting schema in temporary database: %w", err)
 	}
+	planOptions.logger.Debugf("Schema set for empty database.")
 
-	if err := executeStatementsIgnoreTimeouts(ctx, tempDb.ConnPool, plan.Statements); err != nil {
+	planOptions.logger.Debugf("Executing migration plan statements...")
+	if err := executeStatementsIgnoreTimeouts(ctx, tempDb.ConnPool, plan.Statements, planOptions.logger); err != nil {
+		planOptions.logger.Debugf("Error executing migration plan statements: %v", err)
 		return fmt.Errorf("running migration plan: %w", err)
 	}
+	planOptions.logger.Debugf("Migration plan statements executed.")
 
+	planOptions.logger.Debugf("Fetching schema from migrated database...")
 	migratedSchema, err := schemaFromTempDb(ctx, tempDb, planOptions)
 	if err != nil {
+		planOptions.logger.Debugf("Error fetching schema from migrated database: %v", err)
 		return fmt.Errorf("fetching schema from migrated database: %w", err)
 	}
-	planOptions.logger.Infof("Migrated schema: %s", pretty.Sprint(migratedSchema))
+	planOptions.logger.Debugf("Migrated schema: %s", pretty.Sprint(migratedSchema))
 
+	planOptions.logger.Debugf("Asserting migrated schema matches target...")
 	return assertMigratedSchemaMatchesTarget(migratedSchema, newSchema, planOptions)
 }
 
@@ -254,6 +275,8 @@ func setMaxConnectionsIfNotSet(db *sql.DB, defaultMax int) {
 }
 
 func setSchemaForEmptyDatabase(ctx context.Context, emptyDb *tempdb.Database, targetSchema schema.Schema, options *planOptions) error {
+	options.logger.Debugf("Target schema for empty database: %s", pretty.Sprint(targetSchema))
+
 	// We can't create invalid indexes. We'll mark them valid in the schema, which should be functionally
 	// equivalent for the sake of DDL and other statements.
 	//
@@ -267,18 +290,28 @@ func setSchemaForEmptyDatabase(ctx context.Context, emptyDb *tempdb.Database, ta
 	targetSchema.Indexes = validIndexes
 
 	// An empty database doesn't necessarily have an empty schema, so we should fetch it.
+	options.logger.Debugf("Getting starting schema from empty database...")
 	startingSchema, err := schemaFromTempDb(ctx, emptyDb, options)
 	if err != nil {
+		options.logger.Debugf("Error getting starting schema from empty database: %v", err)
 		return fmt.Errorf("getting schema from empty database: %w", err)
 	}
+	options.logger.Debugf("Starting schema from empty database: %s", pretty.Sprint(startingSchema))
 
+	options.logger.Debugf("Generating migration statements for empty database...")
 	statements, err := generateMigrationStatements(startingSchema, targetSchema, &planOptions{})
 	if err != nil {
+		options.logger.Debugf("Error building schema diff for empty database: %v", err)
 		return fmt.Errorf("building schema diff: %w", err)
 	}
-	if err := executeStatementsIgnoreTimeouts(ctx, emptyDb.ConnPool, statements); err != nil {
+	options.logger.Debugf("Generated statements for empty database: %s", pretty.Sprint(statements))
+
+	options.logger.Debugf("Executing statements for empty database...")
+	if err := executeStatementsIgnoreTimeouts(ctx, emptyDb.ConnPool, statements, options.logger); err != nil {
+		options.logger.Debugf("Error executing statements for empty database: %v", err)
 		return fmt.Errorf("executing statements: %w\n%# v", err, pretty.Formatter(statements))
 	}
+	options.logger.Debugf("Statements executed for empty database.")
 	return nil
 }
 
@@ -287,8 +320,13 @@ func schemaFromTempDb(ctx context.Context, db *tempdb.Database, plan *planOption
 }
 
 func assertMigratedSchemaMatchesTarget(migratedSchema, targetSchema schema.Schema, planOptions *planOptions) error {
+	planOptions.logger.Debugf("Comparing migrated schema to target schema...")
+	planOptions.logger.Debugf("Migrated schema: %s", pretty.Sprint(migratedSchema))
+	planOptions.logger.Debugf("Target schema: %s", pretty.Sprint(targetSchema))
+
 	toTargetSchemaStmts, err := generateMigrationStatements(migratedSchema, targetSchema, planOptions)
 	if err != nil {
+		planOptions.logger.Debugf("Error building schema diff between migrated database and new schema: %v", err)
 		return fmt.Errorf("building schema diff between migrated database and new schema: %w", err)
 	}
 
@@ -300,13 +338,14 @@ func assertMigratedSchemaMatchesTarget(migratedSchema, targetSchema schema.Schem
 		planOptions.logger.Errorf("Unexpected statements when migrating from migrated schema to target schema:\n%s", strings.Join(stmtsStrs, "\n"))
 		return fmt.Errorf("validating plan failed. diff detected. See logs for detailed statements.")
 	}
+	planOptions.logger.Debugf("No unexpected statements found. Migrated schema matches target.")
 
 	return nil
 }
 
 // executeStatementsIgnoreTimeouts executes the statements using the sql connection but ignores any provided timeouts.
 // This function is currently used to validate migration plans.
-func executeStatementsIgnoreTimeouts(ctx context.Context, connPool *sql.DB, statements []Statement) error {
+func executeStatementsIgnoreTimeouts(ctx context.Context, connPool *sql.DB, statements []Statement, logger log.Logger) error {
 	conn, err := connPool.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("getting connection from pool: %w", err)
@@ -324,34 +363,60 @@ func executeStatementsIgnoreTimeouts(ctx context.Context, connPool *sql.DB, stat
 	// must be executed within its own transaction block. Postgres will error if you try to set a TRANSACTION-level
 	// timeout for it. SESSION-level statement_timeouts are respected by `ADD INDEX CONCURRENTLY`
 	for _, stmt := range statements {
+		logger.Debugf("Executing statement: %s", stmt.ToSQL())
 		if _, err := conn.ExecContext(ctx, stmt.ToSQL()); err != nil {
+			logger.Debugf("Error executing statement %s: %v", stmt.ToSQL(), err)
 			return fmt.Errorf("executing migration statement: %s: %w", stmt, err)
 		}
 	}
 	return nil
 }
 
-func writePlanAndStatementsToFiles(plan Plan, logger log.Logger) (planFilePath string, statementsFilePath string) {
-	planFile, err := os.CreateTemp("", "plan-*.txt")
-	if err != nil {
-		logger.Errorf("Error creating temporary file for plan: %v", err)
-		return "", ""
+func writePlanAndStatementsToFiles(plan Plan, logger log.Logger, outputFilePath string) (planFilePath string, statementsFilePath string) {
+	var planFile *os.File
+	var statementsFile *os.File
+	var err error
+
+	if outputFilePath != "" {
+		planFilePath = outputFilePath + "_plan.txt"
+		statementsFilePath = outputFilePath + "_statements.sql"
+
+		planFile, err = os.Create(planFilePath)
+		if err != nil {
+			logger.Errorf("Error creating plan file at %s: %v", planFilePath, err)
+			return "", ""
+		}
+		statementsFile, err = os.Create(statementsFilePath)
+		if err != nil {
+			logger.Errorf("Error creating statements file at %s: %v", statementsFilePath, err)
+			planFile.Close()
+			return planFilePath, ""
+		}
+	} else {
+		planFile, err = os.CreateTemp("", "plan-*.txt")
+		if err != nil {
+			logger.Errorf("Error creating temporary file for plan: %v", err)
+			return "", ""
+		}
+		planFilePath = planFile.Name()
+
+		statementsFile, err = os.CreateTemp("", "statements-*.sql")
+		if err != nil {
+			logger.Errorf("Error creating temporary file for statements: %v", err)
+			planFile.Close()
+			return planFilePath, ""
+		}
+		statementsFilePath = statementsFile.Name()
 	}
+
 	defer planFile.Close()
+	defer statementsFile.Close()
 
 	if _, err := planFile.WriteString(pretty.Sprint(plan)); err != nil {
 		logger.Errorf("Error writing plan to file: %v", err)
-		return "", ""
+		return planFilePath, statementsFilePath
 	}
-	planFilePath = planFile.Name()
-	logger.Errorf("Detailed plan written to: %s", planFilePath)
-
-	statementsFile, err := os.CreateTemp("", "statements-*.sql")
-	if err != nil {
-		logger.Errorf("Error creating temporary file for statements: %v", err)
-		return planFilePath, ""
-	}
-	defer statementsFile.Close()
+	logger.Infof("Detailed plan written to: %s", planFilePath)
 
 	var sb strings.Builder
 	for _, stmt := range plan.Statements {
@@ -360,10 +425,9 @@ func writePlanAndStatementsToFiles(plan Plan, logger log.Logger) (planFilePath s
 	}
 	if _, err := statementsFile.WriteString(sb.String()); err != nil {
 		logger.Errorf("Error writing statements to file: %v", err)
-		return planFilePath, ""
+		return planFilePath, statementsFilePath
 	}
-	statementsFilePath = statementsFile.Name()
-	logger.Errorf("Detailed statements written to: %s", statementsFilePath)
+	logger.Infof("Detailed statements written to: %s", statementsFilePath)
 
 	return planFilePath, statementsFilePath
 }
